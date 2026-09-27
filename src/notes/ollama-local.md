@@ -24,7 +24,10 @@
   - [Key Architectural Takeaway](#key-architectural-takeaway)
 - [8. Alternative Workflow: Custom Model Aliases via Ollama Modelfiles](#8-alternative-workflow-custom-model-aliases-via-ollama-modelfiles)
   - [Step 1: System-Level Configuration & Environment Setup](#step-1-system-level-configuration-environment-setup)
+<<<<<<< HEAD
   - [Verified Dual-Model Registry Tags](#verified-dual-model-registry-tags)
+=======
+>>>>>>> kv-wip
   - [Memory & VRAM Enforcement (M4 Pro 48 GB @ 80% Cap)](#memory-vram-enforcement-m4-pro-48-gb-80-cap)
   - [Step 2: Model Ingestion & Custom Modelfiles](#step-2-model-ingestion-custom-modelfiles)
   - [Step 3: OpenCode Agent Configuration (`opencode.jsonc`)](#step-3-opencode-agent-configuration-opencodejsonc)
@@ -122,7 +125,7 @@ To run an autonomous software engineering pipeline locally without exceeding mem
 * **`qwen3-coder:30b-a3b-q8_0`:** Generates at **32–36 tok/s** because it routes computation through only 3.3B active parameters per forward pass. It reaches **~51.4% (Vanilla)** and **~71% (Scaffolded)** on SWE-bench Verified.
 * **Quantization Stability:** The `Q8_0` quantization eliminates routing noise in the 128-expert gating network, maintaining 0.0% schema drift for tool-call emissions.
 
-*(See [§10 "Why These Models"](#10-why-these-models-selection-rationale--benchmarks) for the full comparative research behind this pairing.)*
+*(See [§10 "Why These Models"](#10-why-these-models-selection-rationale-benchmarks) for the full comparative research behind this pairing.)*
 
 ---
 
@@ -436,6 +439,8 @@ Present findings ranked by severity: Critical, Major, Minor.
 
 ## 7. Performance Benchmarks: Local M4 Pro vs. Hyperscaler APIs
 
+*(This is the original, generic-Claude-3.5 comparison from this guide's first draft. For the current, model-specific comparison against Claude Sonnet 5 and Grok — including SWE-bench, context window, and a hardware-upgrade path — see [§17](#17-local-dual-model-setup-vs-cloud-frontier-defaults-claude-sonnet-5-grok).)*
+
 | Metric / Dimension | Hyperscaler Cloud APIs (Claude 3.5 on Bedrock / Vertex / Direct) | Local Dual Setup on M4 Pro (deepseek-r1:14b & qwen3-coder:30b-a3b) |
 | :--- | :--- | :--- |
 | Output Throughput | ~74 – 80.4 tok/s (Datacenter GPU cluster) | 18 – 22 tok/s (Reasoner) / 32 – 36 tok/s (MoE Coder) |
@@ -459,52 +464,9 @@ The system still strictly obeys `OLLAMA_MAX_LOADED_MODELS=1` so the two aliases 
 
 ### Step 1: System-Level Configuration & Environment Setup
 
-**1. Hardware VRAM Allocation**
+This workflow needs no OS or environment changes beyond what §2 already sets: the same `sudo sysctl iogpu.wired_limit_mb=39321` (§2A) and the same `~/.zshrc` exports — `OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_KEEP_ALIVE=3m`, `OLLAMA_NUM_PARALLEL=1`, `OLLAMA_KV_CACHE_TYPE=q8_0`, `OLLAMA_HOST=127.0.0.1:11434` (§2B). If you've already completed §2, skip straight to Step 2 below.
 
-Set the macOS wired memory limit to enforce the 80% ceiling (39,321 MB):
-
-```bash
-sudo sysctl iogpu.wired_limit_mb=39321
-```
-
-To persist this across reboots, add it to `/etc/sysctl.conf`:
-
-```bash
-echo "iogpu.wired_limit_mb=39321" | sudo tee -a /etc/sysctl.conf
-```
-
-**2. Shell Environment Configuration (`~/.zshrc`)**
-
-Append the following variables to your `~/.zshrc`:
-
-```bash
-# ==========================================
-# Ollama Multi-Agent Resource Constraints
-# ==========================================
-# Force sequential single-model residency (prevents VRAM eviction/swap thrashing)
-export OLLAMA_MAX_LOADED_MODELS=1
-
-# Maintain residency for 3 minutes during rapid subagent iterations
-export OLLAMA_KEEP_ALIVE=3m
-
-# Prevent context fragmentation across slots
-export OLLAMA_NUM_PARALLEL=1
-
-# Cut KV Cache footprint by 50% using 8-bit quantized cache
-export OLLAMA_KV_CACHE_TYPE=q8_0
-
-# Ensure localhost binding for OpenCode IPC
-export OLLAMA_HOST=127.0.0.1:11434
-```
-
-### Verified Dual-Model Registry Tags
-
-With that in place, your exact dual-model pairing is verified and locked on disk:
-
-| Component | Exact Ollama Tag | Quantization | Disk / Base VRAM | Primary Function |
-| :--- | :--- | :--- | :--- | :--- |
-| **Planner / Reasoner** | `deepseek-r1:14b-qwen-distill-q8_0` | `Q8_0` | ~15.5 GB | Root-cause analysis, planning, and edge-case testing |
-| **Tactical Workhorse** | `qwen3-coder:30b-a3b-q8_0` | `Q8_0` | ~32.0 GB | Rapid AST patching (32–36 tok/s), JSON tool calls |
+With that in place, your exact dual-model pairing is the same one verified in [§1's registry table](#verified-model-registry-manifests) — no separate lookup needed here.
 
 ### Memory & VRAM Enforcement (M4 Pro 48 GB @ 80% Cap)
 
@@ -741,37 +703,11 @@ A lighter alternative to section 8 names both aliases `harness-planner` / `harne
 
 ### 1. Configure Memory and Swapping Variables
 
-Ensure your `~/.zshrc` has the proper eviction and allocation limits:
-
-```bash
-# 80% Unified Memory Cap on 48 GB (39,321 MB)
-sudo sysctl iogpu.wired_limit_mb=39321
-
-# Enforce sequential loading (never run both simultaneously)
-export OLLAMA_MAX_LOADED_MODELS=1
-export OLLAMA_NUM_PARALLEL=1
-
-# Maintain resident model for 3 minutes during rapid tool loops
-export OLLAMA_KEEP_ALIVE=3m
-
-# Halve KV cache overhead
-export OLLAMA_KV_CACHE_TYPE=q8_0
-```
+Same as §2: `sudo sysctl iogpu.wired_limit_mb=39321` plus the `~/.zshrc` exports (`OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_NUM_PARALLEL=1`, `OLLAMA_KEEP_ALIVE=3m`, `OLLAMA_KV_CACHE_TYPE=q8_0`, `OLLAMA_HOST=127.0.0.1:11434`). Nothing here changes those values — skip ahead if §2 is already applied.
 
 ### 2. Create the Tailored Modelfiles
 
-Reuse `Modelfile.planner` from section 8 as-is, and create `Modelfile.executor` (a stripped-down `Modelfile.coder` with no baked-in system prompt, since the harness scripts supply their own system prompt at request time):
-
-```dockerfile
-FROM qwen3-coder:30b-a3b-q8_0
-
-# Keep context at 16k to protect the 80% VRAM ceiling with Q8 weights
-PARAMETER num_ctx 16384
-
-# Precise deterministic tool call syntax
-PARAMETER temperature 0.1
-PARAMETER top_p 0.95
-```
+Reuse `Modelfile.planner` from §8 as-is. For the coder role, create `Modelfile.executor`: identical to §8's `Modelfile.coder` (same `FROM`, `num_ctx 16384`, `temperature 0.1`, `top_p 0.95`) with the `SYSTEM` block removed, since the harness scripts in §14/§15 supply their own system prompt at request time instead of baking one into the model.
 
 Register both aliases:
 
@@ -819,7 +755,7 @@ Same pattern as §8: reuse §4's canonical file, add `harness-planner` / `harnes
 
 ### Verification Test
 
-To confirm that the models hot-swap sequentially without exceeding 80% VRAM, run the same smoke test described in section 8's "Verification and Health Check Run" — see also [§13's Step 5](#step-5-verification--performance-monitoring) for the dedicated `harness-planner`/`harness-executor` monitoring routine used by the Python harnesses below.
+To confirm that the models hot-swap sequentially without exceeding 80% VRAM, run the same smoke test described in section 8's "Verification and Health Check Run" — see also [§13's Step 5](#step-5-verification-performance-monitoring) for the dedicated `harness-planner`/`harness-executor` monitoring routine used by the Python harnesses below.
 
 ## 10. Why These Models: Selection Rationale & Benchmarks
 
@@ -1104,29 +1040,7 @@ When OpenCode (or the `harness.py` scripts in §14/§15) orchestrates a fix acro
 
 ### Memory & VRAM Breakdown Under the 80% Cap (32k-Context Executor Variant)
 
-If you widen the executor's context window to 32k instead of the 16k default used in §1/§8/§9 (e.g., for a harness that needs to hold a large diagnostic + file dump per turn), the footprint shifts to whichever model is currently active plus its context buffer:
-
-```text
-┌────────────────────────────────────────────┐
-│      M4 Pro 48 GB Unified Memory (273 GB/s) │
-├───────────────────────┬──────────────────────┤
-│ macOS System Pool (20%)│ Max GPU Allocatable (80%) │
-│ ~9.6 GB RAM            │ ~38.4 GB VRAM         │
-│ (WindowServer, IDE, Host OS) │ (Active Weights + Context Cache) │
-└───────────────────────┴──────────┬───────────┘
-                                    │
-              ┌─────────────────────┴───────────────────────┐
-              │ Sequential Ollama VRAM Footprint             │
-              ├───────────────────────┬───────────────────────┤
-              │ Planner Active (Turn 1): │ Executor Active (Turn 2): │
-              │ • DeepSeek-R1-14B: ~15.5 GB │ • Qwen3-Coder-30B: ~24.8 GB │
-              │ • 32k Q8 Context: ~4.2 GB │ • 32k Q8 Context: ~4.2 GB │
-              │ Total Peak: ~19.7 GB │ Total Peak: ~29.0 GB │
-              │ Remaining Headroom: ~18.7 GB │ Remaining Headroom: ~9.4 GB │
-              └───────────────────────┴───────────────────────┘
-```
-
-Widening the executor to 32k context costs ~9.3 GB more VRAM than the 16k default (§8's Modelfile.coder) but still lands comfortably under the 38.4 GB ceiling — useful if a single tool turn needs to inspect a large file plus a long traceback at once.
+If you widen the executor's context window to 32k instead of the 16k default used in §1/§8/§9 (e.g., for a harness that needs to hold a large diagnostic + file dump per turn), the footprint shifts to whichever model is currently active plus its context buffer — see [§13's memory diagram](#updated-memory-strategy-strict-80-allocation-ceiling) for the numeric breakdown of exactly this scenario (~26.7 GB peak / ~11.7 GB headroom for the executor), which also matches the Layer 3 math directly below.
 
 ### Layer-by-Layer Architecture
 
@@ -1239,21 +1153,7 @@ When an issue is handed to the supervisor (or when a previous run fails a test):
 
 ### 1. Configure Ollama Environment Variables
 
-Add these parameters to your `~/.zshrc` to preserve the 9.6 GB system buffer and maintain execution speeds:
-
-```bash
-# Keep only 1 model resident in VRAM to prevent memory overlap
-export OLLAMA_MAX_LOADED_MODELS=1
-
-# Maintain model in memory between tool loop iterations (5 min window)
-export OLLAMA_KEEP_ALIVE=5m
-
-# Restrict parallel execution slots to prevent concurrent VRAM fragmentation
-export OLLAMA_NUM_PARALLEL=1
-
-# Quantize KV cache to Q8_0 to cut context memory requirements by 50%
-export OLLAMA_KV_CACHE_TYPE=q8_0
-```
+No new variables here — this is the same `~/.zshrc` block from §2B (`OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_KEEP_ALIVE=3m`, `OLLAMA_NUM_PARALLEL=1`, `OLLAMA_KV_CACHE_TYPE=q8_0`, `OLLAMA_HOST=127.0.0.1:11434`), which is what preserves the 9.6 GB system buffer referenced throughout this section.
 
 Apply the changes:
 
@@ -1263,14 +1163,7 @@ killall ollama 2>/dev/null || true
 ollama serve > /dev/null 2>&1 &
 ```
 
-**Matching Resource Stats Under the 80% Cap**
-
-* **Total Unified Memory:** 48 GB
-* **Target GPU Limit (80%):** 38.4 GB (39,321 MB)
-* **Guaranteed Host RAM Pool:** 9.6 GB (prevents UI lag, beachballs, and memory-pressure thrashing)
-* **Active VRAM Peak (Phase 1 Planner):** ~19.7 GB (~18.7 GB buffer remaining under the 80% ceiling)
-* **Active VRAM Peak (Phase 2 Executor):** ~26.7 GB (~11.7 GB buffer remaining under the 80% ceiling)
-* **Memory Pressure Status:** Continuous Green, with zero page swapping during iterative tool execution.
+With this applied, memory pressure should stay continuous Green with zero page swapping during iterative tool execution — see the diagram below for the exact GB breakdown per phase.
 
 ### Updated Memory Strategy: Strict 80% Allocation Ceiling
 
@@ -1304,7 +1197,7 @@ In modern macOS (Sonoma and newer), the memory ceiling uses the megabyte paramet
 48 GB × 0.80 = 38.4 GB  ⟹  38.4 × 1024 = 39321 MB
 ```
 
-Apply the runtime limit in Terminal:
+Apply the runtime limit in Terminal (the same command as §2A):
 
 ```bash
 sudo sysctl iogpu.wired_limit_mb=39321
@@ -1969,17 +1862,7 @@ Every model in the survey tables above is available in native Apple Silicon **ML
 1. **Higher Prompt Processing (Prefill) Speed:** In a loop harness where you repeatedly feed back 2,000–8,000 tokens of file contents and compiler output, MLX evaluates prompts roughly **1.5× to 2× faster** than Ollama due to native Metal matrix-multiplication kernels.
 2. **Dynamic 6-bit (`-6bit`) and 8-bit (`-8bit`) native weights:** Hugging Face maintains quantized MLX checkpoints matching the exact parameter sizes you need.
 
-**MLX Weights-on-Disk Survey (companion to the RAM-based table above)**
-
-| Model & Quant | Weights on Disk | Generation Speed (tok/s) on M4 Pro | Reasoning & Thinking | Coding Quality | Tooling & Chaining Fidelity | Harness Profile & Loop Fit |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| Devstral 24B (Q8_0) | ~25.5 GB | 11 – 13 tok/s | High (Agent-centric hypothesis & step planning) | Very High (Built natively for multi-turn tool loops) | Very High (Built natively for multi-turn tool loops) | High (~20 GB headroom remains for large file buffers) |
-| Qwen 2.5 Coder 32B (Q6_K) | ~26.5 GB | 9 – 11 tok/s | Medium-High (Via structured step-by-step scratchpads) | Very High (Top-tier syntax, AST, & diff generation) | High (Reliable OpenAI-compatible schema emission) | High (16k context fits comfortably within 36 GB VRAM) |
-| Mistral Small 24B (2501) (Q8_0) | ~25.5 GB | 11 – 13 tok/s | Medium (Clean linear step planning) | Medium-High (Clean, idiomatic implementations) | Very High (Strict schema and zero parameter hallucination) | High (Lowest JSON syntax failure rate in long loops) |
-| DeepSeek-R1 Distill Qwen 14B (Q8_0) | ~15.5 GB | 16 – 19 tok/s | Very High (True internal chain-of-thought `<think>` traces) | Medium-High (Solid multi-language generation) | Medium-High (Can leak thought tokens into JSON payloads) | High (Fast turns; 25 GB free RAM for logs & traces) |
-| Qwen 2.5 Coder 14B (Q8_0) | ~15.5 GB | 16 – 19 tok/s | Medium-Low (Fast single-pass deductions) | High (Strong syntax and fast diffs) | High (Reliable tool-call triggers) | Very High (Sub-second dispatch; handles 64k+ context) |
-| DeepSeek-R1 Distill Qwen 32B (Q6_K) | ~27.0 GB | 8 – 10 tok/s | Extreme (Exhaustive mathematical/root-cause deliberation) | High (Deep logic, occasional markdown leaks) | Medium (Can leak thought tokens into JSON payloads) | Medium-Low (Long think tokens cause 60–120s step delays) |
-| Command R 35B (08-2024) (Q6_K) | ~28.0 GB | 8 – 10 tok/s | Medium (Optimized for multi-hop tool routing) | Medium (Competent scripts, less dense refactoring) | Exceptional (Engineered specifically for multi-step tool use) | Medium (High memory footprint leaves narrow context space) |
+Backend choice (Ollama GGUF vs. MLX) changes a model's disk footprint and generation speed (per the two tables above), not its qualitative reasoning/coding/tooling profile — for those ratings on this same set of models, see the [Broader Reasoning / Coding / Tooling Survey](#broader-reasoning-coding-tooling-survey) earlier in this section.
 
 ### Single-Model vs. Two-Model Trade-off (If You Don't Want to Run Two Models)
 
