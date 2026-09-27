@@ -1965,49 +1965,37 @@ Evaluating specialized variants designed explicitly to combine thinking with age
 
 **Bottom line for this guide:** this is exactly why §1–§15 use the *two-model* pipeline (`deepseek-r1:14b-qwen-distill-q8_0` for reasoning + `qwen3-coder:30b-a3b-q8_0` for tooling) rather than a single model — no single 24–32B open-weight model available today clears "High" on reasoning, coding, and tool fidelity simultaneously, and Devstral-24B (the closest single-model candidate) still trails the two-model pipeline's ~68–72% scaffolded SWE-bench score with its ~53.6%.
 
----
+## 17. Local Dual-Model Setup vs. Cloud Frontier Defaults (Claude Sonnet 5 / Grok)
 
-# Exporting This Guide to PDF
+> **Caveat before the numbers:** every table elsewhere in this guide (§1, §10, §16) traces back to a specific pinned, quantized checkpoint (`deepseek-r1:14b-qwen-distill-q8_0`, `qwen3-coder:30b-a3b-q8_0`) that doesn't change under you. Claude Sonnet 5 and Grok's coding-tier models are hosted, continuously-updated frontier models — their throughput, pricing, and published SWE-bench numbers shift with provider infrastructure and model refreshes. Treat the cloud-side figures below as directional/publicly-reported ranges to sanity-check against Anthropic's and xAI's current model cards before making a decision, not as pinned constants like the local benchmarks above.
 
-To export everything above into a styled, publication-ready PDF on your Mac, use one of the workflows below.
+### Detailed Compare & Contrast
 
-## Method 1: Instant CLI Conversion via Node/Markdown-PDF (Recommended)
+| Dimension | Local Dual Setup (`deepseek-r1:14b-qwen-distill-q8_0` + `qwen3-coder:30b-a3b-q8_0`) | Claude Sonnet 5 (Cursor / Claude Code default) | Grok Code Fast / Grok 4 (xAI, Cursor's Grok default) |
+| :--- | :--- | :--- | :--- |
+| **Output Throughput** | 18–22 tok/s (Reasoner) / 32–36 tok/s (MoE Coder) — hard-capped by the M4 Pro's 273 GB/s memory bandwidth (§10 formula). | Typically ~60–100+ tok/s on Anthropic's hosted infra, higher with prompt caching on repeated context; not bandwidth-bound the way a single local GPU is. | Grok Code Fast is explicitly tuned for high-throughput agentic loops; publicly reported well above 100 tok/s in bursts. Grok 4 (non-fast) trades some speed for depth. |
+| **Time-to-First-Token / Turn Latency** | 0 ms network, but +1.2–1.8s per **role swap** (Ollama evicting/loading the other model) — see §12 hot-swap boundary. | ~150–400 ms network + queueing; extended-thinking mode adds several seconds before the first visible token. | Similar network-bound TTFT to Sonnet; Grok Code Fast is optimized to minimize this for tight tool-call loops. |
+| **Context Window** | 32k (planner, `Modelfile.planner`) / 16k (coder, `Modelfile.coder`) — deliberately capped to stay under the 38.4 GB VRAM ceiling (§8 "Key Tuning Rule"). | 200K tokens standard tier (1M on extended-context offerings) — no local hardware ceiling. | ~128K–256K depending on the specific Grok tier. |
+| **SWE-bench Verified (agentic/scaffolded)** | ~68–72% (`qwen3-coder:30b-a3b-q8_0`, per §10/§16) — reasoner not separately SWE-bench-scored, it only plans. | Anthropic's Sonnet/Opus generations have publicly trended into the ~70–80%+ range on SWE-bench Verified with agentic scaffolding; **verify Sonnet 5's specific published number**, it postdates the figures cached in this note. | xAI has published competitive SWE-bench-style figures for Grok's coding-tier models in a similar ~65–75% band; **verify current Grok model card**. |
+| **Reasoning Depth (multi-file causal chains, proofs)** | High for single-file/localized algorithmic reasoning (`<think>` tokens, §11 Category 4); degrades on chains spanning more files than fit in 32k context. | Very High — extended thinking mode + 200K context lets it hold an entire mid-size repo's causal chain in one turn without the pruning §11's Guardrail 1 requires locally. | Very High — comparable extended-reasoning tier; Grok 4 in particular is positioned for deep multi-step deduction. |
+| **Coding Quality (syntax precision, idiomatic diffs)** | Very High within the guardrails of §11 Category 2 (targeted search/replace, pruned context) — degrades on tasks needing whole-repo idiom awareness it was never shown. | Very High across a much broader training distribution; handles unfamiliar codebases, mixed languages, and ambiguous specs with less prompt-engineering scaffolding than §6/§11 require locally. | Very High, comparable breadth to Sonnet 5 for mainstream languages; both benefit from far larger pretraining/RLHF coding corpora than the local checkpoints. |
+| **Agentic Tool-Calling Fidelity** | 0.0% schema drift at `q8_0` (§1), but only because of the harness guardrails in §12 Layer 1 (strict JSON contract, `<think>`-tag stripping, search/replace atomicity) — the model needs that scaffolding. | Natively trained for long, mixed tool-call/reasoning agentic loops (this is the same tool-use loop Claude Code itself runs on); tolerates looser prompting than the local setup. | Also natively agentic-trained; Grok Code Fast specifically targets long tool-chaining loops at low per-call latency. |
+| **Cost Structure** | $0.00 marginal cost after hardware purchase; ~35W electricity per repair loop (§7). | Pay-per-token (input/output priced separately); cost scales directly with context reused each turn unless prompt caching is used. | Pay-per-token, generally priced to undercut Claude/GPT-tier per-token rates for the "fast" coding variant. |
+| **Data Privacy / Egress** | Fully air-gapped, localhost-bound (127.0.0.1), zero egress (§7). | Data leaves the machine to Anthropic's API (subject to your account's data-retention/training-opt-out settings). | Data leaves the machine to xAI's API (subject to xAI's retention policy). |
+| **Concurrency / Scaling** | Strictly sequential — `OLLAMA_NUM_PARALLEL=1`, one model resident at a time (§7, §12 Layer 4). | Near-infinite — managed multi-tenant elastic infra scales with your API rate limit, not your local hardware. | Same elastic scaling model as Sonnet. |
+| **Setup & Maintenance Burden** | High: sysctl tuning, Modelfiles, alias management, harness code, guardrail prompting (§2, §8, §9, §11). | Near-zero: it's the default model in Cursor/Claude Code, no local infrastructure to maintain. | Near-zero: selectable as a default/alternate model in Cursor with no local setup. |
+| **Offline Capability** | Full — works with no network connection at all. | None — requires an internet connection and a live API key. | None — same requirement. |
+| **Model Staleness Risk** | None from the provider's side — the pinned `q8_0` checkpoints don't change under you (a real advantage for reproducible benchmarking), but you're responsible for manually pulling newer Ollama registry tags as better local models ship. | Low — Anthropic ships model updates; you get improvements without doing anything, but a provider-side update can also silently change behavior between your test runs. | Low — same trade-off, xAI-side updates. |
+| **Best Fit** | Repos that fit in 16–32k pruned context, zero-cost/offline iteration, air-gapped or compliance-sensitive codebases, reproducible fixed-checkpoint benchmarking. | Large or unfamiliar repositories, cross-cutting refactors needing >32k context, tasks where resolution accuracy matters more than marginal token cost. | Same profile as Sonnet 5, with a lean toward high-volume, latency-sensitive agentic loops (e.g., CI-triggered auto-fix bots) where Grok Code Fast's speed/cost profile pays off. |
 
-You can generate the PDF directly from your terminal using `npx` with zero persistent installations.
+### Reading the Trade-off
 
-1. Save this entire document as `DIVIDE_AND_CONQUER_SETUP.md`.
-2. Render it:
+* **Throughput isn't the whole story.** The local setup's 18–45 tok/s looks slow next to a hosted model's 60–100+ tok/s, but the hosted number is per-request and shared infrastructure; it doesn't include the ~150–400ms network round-trip added to *every* turn, nor rate-limit queueing under load. The local setup's real tax is the ~1.2–1.8s hot-swap between roles (§12), not raw decode speed.
+* **Context window is the sharpest structural gap.** Everything in §6/§8/§11 about pruning prompts, capping `local-coder` at 16k, and issuing a "Deterministic Patch Contract" instead of dumping a repo exists *because* the local models can't hold more than 16–32k tokens without blowing the 38.4 GB VRAM ceiling. Sonnet 5 and Grok's 128K–1M-token windows remove that constraint entirely — they can read a large unfamiliar module in one shot where the local pipeline needs `@planner` to pre-isolate it.
+* **Reasoning and coding quality favor the frontier models on breadth, not necessarily on this repo.** A 14B distilled reasoner and a 30B-total/3.3B-active MoE coder are narrow, cheap, and — per §10/§16 — genuinely competitive on SWE-bench Verified for well-scoped patches. But they haven't seen the volume or diversity of code Sonnet 5 or Grok have, so on an unfamiliar codebase or an ambiguous spec, expect the frontier models to need less hand-holding (less of §6's guardrail scaffolding) to get an equivalently correct result.
+* **Tool-calling fidelity is closer than the raw model size suggests.** `qwen3-coder:30b-a3b-q8_0`'s 0.0% schema drift (§1) is real, but it's earned through the harness's strict JSON contract and `<think>`-stripping (§12 Layer 1) — remove that scaffolding and reliability drops. Sonnet 5 and Grok tolerate looser, more conversational tool-calling prompts natively because agentic tool-use is trained in, not bolted on via a supervisor.
+* **The honest reason to run the local pipeline isn't raw capability — it's the constraint set.** Zero marginal cost, zero network egress, and a fixed, reproducible checkpoint are the actual wins; treat §1–§16 as optimizing hard against a fixed 48 GB/273 GB/s hardware budget, not as a claim that this pipeline out-codes Sonnet 5 or Grok in the general case.
 
-```bash
-npx md-to-pdf DIVIDE_AND_CONQUER_SETUP.md
-```
+### Closing the Gap: What Hardware and Models It Would Actually Take
 
-This generates `DIVIDE_AND_CONQUER_SETUP.pdf` directly in your directory. To immediately open and view it in macOS Preview:
-
-```bash
-open DIVIDE_AND_CONQUER_SETUP.pdf
-```
-
-## Method 2: Pandoc + wkhtmltopdf / WeasyPrint (Alternative Engine)
-
-If you already have `pandoc` or Homebrew installed:
-
-```bash
-# 1. Install pandoc and weasyprint (or wkhtmltopdf)
-brew install pandoc weasyprint
-
-# 2. Compile directly to PDF
-pandoc DIVIDE_AND_CONQUER_SETUP.md -o DIVIDE_AND_CONQUER_SETUP.pdf --pdf-engine=weasyprint
-
-# 3. View the document
-open DIVIDE_AND_CONQUER_SETUP.pdf
-```
-
-## Method 3: VS Code / Cursor Native Export
-
-If you prefer using your IDE:
-
-1. Open `DIVIDE_AND_CONQUER_SETUP.md` in VS Code or Cursor.
-2. Press `Cmd + Shift + P` and install the extension: **Markdown PDF** (by yzane).
-3. Right-click anywhere inside the editor tab.
-4. Select **Markdown PDF: Export (pdf)**. The PDF file will be compiled and saved right next to the markdown document.
+The gap to Sonnet 5 isn't primarily a software or prompting problem — it's that §1's whole architecture is built around a hard 48 GB / 273 GB/s ceiling, and every design choice in this guide (16k coder context, `q8_0` over `fp16`, sequential hot-swapping instead of both models resident, the pruning guardrails in §11) exists to fit two comparatively small models (14B and 30B-total/3.3B-active) inside that envelope. Sonnet 5 is almost certainly served as a much larger model (frontier labs don't publish exact parameter counts, but the pattern across the industry is triple-digit-billion to trillion-parameter-class Mixture-of-Experts) across a cluster of datacenter accelerators with aggregate memory bandwidth in the multiple-TB/s range — one to two orders of magnitude past a single M4 Pro's 273 GB/s — plus agentic tool-use and coding RLHF at a scale no single locally-hosted checkpoint replicates. Meaningfully closing that gap therefore requires moving on both axes at once, not just one. On hardware, the realistic Apple Silicon step-up is a Mac Studio with an Ultra-class chip: the M2 Ultra (192 GB unified memory, ~800 GB/s) or M3 Ultra (up to 512 GB, ~819 GB/s) — roughly **3x the memory bandwidth** of this guide's M4 Pro and, more importantly, enough unified memory headroom to hold a genuinely large model's weights and KV cache without the 80%-cap juggling in §2/§8; the alternative path is a multi-GPU NVIDIA workstation (e.g., 2–4× H100/H200 with NVLink) which trades Apple's unified-memory simplicity for far higher raw bandwidth and cost. On the model side, that hardware tier is what makes it feasible to `ollama pull` something in the 70B–671B-parameter class instead of this guide's 14B/30B pair — candidates like `deepseek-r1:671b` (DeepSeek-R1 full MoE, 37B active, needs ~400+ GB even at Q4_K_M, so effectively requires the 512 GB M3 Ultra), `qwen3:235b-a22b` (235B-total/22B-active MoE, fits a 192–512 GB Ultra at Q4–Q8), `llama3.1:405b` (dense, ~230 GB at Q4, punishing on tokens/sec since it has no MoE sparsity to exploit), or `gpt-oss:120b` (117B-total MoE, the most attainable of the group at ~120 GB and a realistic fit for a 192 GB M2 Ultra) — all of which post SWE-bench Verified and general reasoning numbers meaningfully closer to frontier-tier than the `deepseek-r1:14b` / `qwen3-coder:30b-a3b` pair this guide runs. Even fully specced, though, expect diminishing returns rather than parity: you'd be spending roughly $8K–$15K+ on a Mac Studio Ultra (or comparably more on a multi-GPU rig) and drawing hundreds of watts to run a single dense/MoE model with no hot-swap partner, still bottlenecked to double-digit tok/s on the largest dense checkpoints, and still without the agentic tool-use fine-tuning and inference-time optimizations (speculative decoding, custom kernels, RLHF at Anthropic's scale) that make Sonnet 5 behave the way it does — so this buys you a stronger single local model, not a local Sonnet 5.
