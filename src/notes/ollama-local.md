@@ -34,7 +34,7 @@
 - [9. Lightweight Variant: Single-Alias Naming Used by the Harness Scripts](#9-lightweight-variant-single-alias-naming-used-by-the-harness-scripts)
   - [1. Configure Memory and Swapping Variables](#1-configure-memory-and-swapping-variables)
   - [2. Create the Tailored Modelfiles](#2-create-the-tailored-modelfiles)
-  - [3. Update `opencode.json`](#3-update-opencodejson)
+  - [3. Update `opencode.jsonc`](#3-update-opencodejsonc)
   - [Verification Test](#verification-test)
 - [10. Why These Models: Selection Rationale & Benchmarks](#10-why-these-models-selection-rationale-benchmarks)
   - [Architectural Differences: Qwen 2.5 vs. Qwen 3](#architectural-differences-qwen-25-vs-qwen-3)
@@ -201,6 +201,8 @@ ollama list
 ## 4. OpenCode Configuration (`opencode.jsonc`)
 
 Place this file in your project root or at `~/.config/opencode/opencode.jsonc`. It configures the dual-agent architecture, establishes strict read/write boundaries, configures 32k/16k context limits, and enables the real-time terminal telemetry HUD.
+
+This is the **canonical `opencode.jsonc`** for this guide. The `ui`, `telemetry`, `plugin`, and `provider` blocks below are shared verbatim by every alias-based variant later in this guide (§8, §9) — those sections only show the `agents` block that changes, on top of this same file, to avoid repeating ~30 lines of identical boilerplate three times. All four agents use the consistent schema this guide standardizes on: `agents` (plural) → per-agent `permissions` (an array of `{action, resource, effect}` rules), and `tools` with an explicit `read` key.
 
 ```jsonc
 {
@@ -584,50 +586,50 @@ ollama create local-coder -f Modelfile.coder
 
 ### Step 3: OpenCode Agent Configuration (`opencode.jsonc`)
 
-Place this file either at `~/.config/opencode/opencode.jsonc` (global) or directly in your project root as `opencode.jsonc`:
+Reuse the canonical `opencode.jsonc` from §4 as-is — same `ui`, `telemetry`, `plugin`, and `provider` blocks. Only two things change on top of that file:
+
+1. Drop the `reviewer` and `tester` agents (this workflow only needs `planner`/`coder`), and repoint their `model` fields to the two aliases created above.
+2. Add `local-planner` / `local-coder` entries to `provider.ollama.models` (mirroring the raw-tag entries already in §4) so OpenCode's context/output accounting still applies to the aliases.
 
 ```jsonc
 {
-  "$schema": "https://opencode.ai/config.json",
-  // Primary default agent
   "default_agent": "planner",
-  "agent": {
-    // ---------------------------------------------
-    // AGENT 1: STRATEGIC REASONER (Read-Only Architect)
-    // ---------------------------------------------
+  "provider": {
+    "ollama": {
+      "models": {
+        "local-planner": { "name": "Local Planner (DeepSeek-R1 alias)", "limit": { "context": 32768, "output": 8192 } },
+        "local-coder": { "name": "Local Coder (Qwen3-Coder alias)", "limit": { "context": 16384, "output": 4096 } }
+      }
+    }
+  },
+  "agents": {
     "planner": {
       "mode": "primary",
       "model": "ollama/local-planner",
       "description": "High-level reasoning agent for root-cause analysis, architecture review, and long-range planning.",
-      "tools": {
-        "write": false,
-        "edit": false,
-        "bash": false
-      },
-      "permission": {
-        // Enforce strict read-only behavior; planner cannot mutate disk
-        "edit": "deny",
-        "bash": "deny"
-      }
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "tools": { "read": true, "write": false, "edit": false, "bash": false },
+      "permissions": [
+        { "action": "read", "resource": "*", "effect": "allow" },
+        { "action": "edit", "resource": "*", "effect": "deny" },
+        { "action": "write", "resource": "*", "effect": "deny" },
+        { "action": "shell", "resource": "*", "effect": "deny" }
+      ]
     },
-
-    // ---------------------------------------------
-    // AGENT 2: TACTICAL WORKHORSE (Write & Execute)
-    // ---------------------------------------------
     "coder": {
       "mode": "subagent",
       "model": "ollama/local-coder",
       "description": "Tactical code generation workhorse for diffs, file editing, and test execution.",
-      "tools": {
-        "write": true,
-        "edit": true,
-        "bash": true
-      },
-      "permission": {
-        // Allow autonomous file editing and shell execution
-        "edit": "allow",
-        "bash": "allow"
-      }
+      "temperature": 0.1,
+      "top_p": 0.95,
+      "tools": { "read": true, "write": true, "edit": true, "bash": true },
+      "permissions": [
+        { "action": "read", "resource": "*", "effect": "allow" },
+        { "action": "edit", "resource": "*", "effect": "allow" },
+        { "action": "write", "resource": "*", "effect": "allow" },
+        { "action": "shell", "resource": "*", "effect": "allow" }
+      ]
     }
   }
 }
@@ -778,15 +780,21 @@ ollama create harness-planner -f Modelfile.planner
 ollama create harness-executor -f Modelfile.executor
 ```
 
-### 3. Update `opencode.json`
+### 3. Update `opencode.jsonc`
 
-Point OpenCode to the exact tags:
+Same pattern as §8: reuse §4's canonical file, add `harness-planner` / `harness-executor` entries to `provider.ollama.models`, and swap in this variant's `agents` block (renaming `planner` → `architect` and dropping `reviewer`/`tester`):
 
-```json
+```jsonc
 {
-  "$schema": "https://opencode.ai/config.json",
-  "model": "ollama/deepseek-r1:14b-qwen-distill-q8_0",
   "default_agent": "architect",
+  "provider": {
+    "ollama": {
+      "models": {
+        "harness-planner": { "name": "Harness Planner (DeepSeek-R1 alias)", "limit": { "context": 32768, "output": 8192 } },
+        "harness-executor": { "name": "Harness Executor (Qwen3-Coder alias)", "limit": { "context": 16384, "output": 4096 } }
+      }
+    }
+  },
   "agents": {
     "architect": {
       "mode": "primary",
