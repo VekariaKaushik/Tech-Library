@@ -256,28 +256,39 @@ Place this file in your project root or at `~/.config/opencode/opencode.jsonc`. 
 
 Create an automated dashboard script to observe memory usage, token burn rates, and hot-swaps in real time.
 
-Save as `opencode-hud.sh`:
+Save as `~/bin/opencode-hud.sh`:
 
 #!/usr/bin/env bash
 SESSION="opencode-dev"
 
+# Re-attach if session already exists
 tmux has-session -t $SESSION 2>/dev/null
 if [ $? -eq 0 ]; then
   tmux attach-session -t $SESSION
   exit 0
 fi
 
+# 1. Main interactive OpenCode workspace (Left 60%)
 tmux new-session -d -s $SESSION -n "Agent-Workspace"
 tmux send-keys -t $SESSION "opencode" C-m
 
+# 2. Ollama VRAM and Residency Monitor (Top-Right 40%)
 tmux split-window -h -p 40 -t $SESSION
 tmux send-keys -t $SESSION "watch -n 0.5 'ollama ps'" C-m
 
+# 3. Real-Time Token Generation & Throughput Monitor (Bottom-Right 50%)
 tmux split-window -v -p 50 -t $SESSION
 tmux send-keys -t $SESSION "tail -f ~/.ollama/logs/server.log | grep --line-buffered -E '(eval rate|prompt eval count|total duration|load duration)'" C-m
 
+# Focus back on the main workspace
 tmux select-pane -t 0
 tmux attach-session -t $SESSION
+
+Make it executable and link to your environment:
+
+chmod +x ~/bin/opencode-hud.sh
+echo 'alias opencode="~/bin/opencode-hud.sh"' >> ~/.zshrc
+source ~/.zshrc
 
 ## 6. Prompt Engineering & Operational Guardrails
 
@@ -343,6 +354,329 @@ Present findings ranked by severity: Critical, Major, Minor.
 Datacenter cloud deployments achieve higher aggregate throughput (80 tok/s) and rapid context prefill across large distributed clusters.
 
 The local M4 Pro architecture trades raw throughput (generating at 32–36 tok/s) and a ~1.8s hot-swap transition for complete data confidentiality, zero network latency within turn sequences, and zero per-token cost, enabling continuous test-driven repair loops within a 34.2 GB peak VRAM footprint.
+
+## 8. Alternative Workflow: Custom Model Aliases via Ollama Modelfiles
+
+The sections above configure OpenCode's provider block to reference the raw Ollama registry tags directly. An alternative — and slightly more portable — approach wraps each base checkpoint in a dedicated Ollama Modelfile that bakes in the context window, sampling temperature, and system prompt, then exposes it under a short local alias (`local-planner`, `local-coder`). OpenCode's agent config then only needs to reference the alias, not the full tag.
+
+The system still strictly obeys `OLLAMA_MAX_LOADED_MODELS=1` so the two aliases never co-exist in memory: peak VRAM never exceeds ~34.2 GB, well within the 38.4 GB (80%) ceiling, preserving 9.6 GB for macOS.
+
+### Step 1: System-Level Configuration & Environment Setup
+
+#### 1. Hardware VRAM Allocation
+
+Set the macOS wired memory limit to enforce the 80% ceiling (39,321 MB):
+
+sudo sysctl iogpu.wired_limit_mb=39321
+
+To persist this across reboots, add it to `/etc/sysctl.conf`:
+
+echo "iogpu.wired_limit_mb=39321" | sudo tee -a /etc/sysctl.conf
+
+#### 2. Shell Environment Configuration (`~/.zshrc`)
+
+Append the following variables to your `~/.zshrc`:
+
+# ==========================================
+# Ollama Multi-Agent Resource Constraints
+# ==========================================
+# Force sequential single-model residency (prevents VRAM eviction/swap thrashing)
+export OLLAMA_MAX_LOADED_MODELS=1
+
+# Maintain residency for 3 minutes during rapid subagent iterations
+export OLLAMA_KEEP_ALIVE=3m
+
+# Prevent context fragmentation across slots
+export OLLAMA_NUM_PARALLEL=1
+
+# Cut KV Cache footprint by 50% using 8-bit quantized cache
+export OLLAMA_KV_CACHE_TYPE=q8_0
+
+# Ensure localhost binding for OpenCode IPC
+export OLLAMA_HOST=127.0.0.1:11434
+
+### Verified Dual-Model Registry Tags
+
+With that in place, your exact dual-model pairing is verified and locked on disk:
+
+| Component | Exact Ollama Tag | Quantization | Disk / Base VRAM | Primary Function |
+| :--- | :--- | :--- | :--- | :--- |
+| **Planner / Reasoner** | `deepseek-r1:14b-qwen-distill-q8_0` | `Q8_0` | ~15.5 GB | Root-cause analysis, planning, and edge-case testing |
+| **Tactical Workhorse** | `qwen3-coder:30b-a3b-q8_0` | `Q8_0` | ~32.0 GB | Rapid AST patching (32–36 tok/s), JSON tool calls |
+
+### Memory & VRAM Enforcement (M4 Pro 48 GB @ 80% Cap)
+
+Because `qwen3-coder:30b-a3b-q8_0` weighs ~32 GB on load, managing context and concurrency prevents breaching your 38.4 GB (80%) ceiling:
+
+Total Allocatable Cap (80%): 38.4 GB (39,321 MB)
+System Pool Guarantee (20%):  9.6 GB (Zero UI lag / No swap)
+
+[Phase 1] deepseek-r1:14b Active:
+  Weights: ~15.5 GB + 32k Q8 Context: ~4.2 GB = ~19.7 GB Peak (~18.7 GB buffer)
+
+[Phase 2] qwen3-coder:30b-a3b Active:
+  Weights: ~32.0 GB + 16k Q8 Context: ~2.2 GB = ~34.2 GB Peak (~4.2 GB buffer)
+
+**Key Tuning Rule for the Q8_0 Workhorse:** With `Q8_0` weights at 32 GB, cap the executor's context window to 16,384 tokens (`PARAMETER num_ctx 16384`) rather than 32k.
+
+* A 16k context window with `OLLAMA_KV_CACHE_TYPE=q8_0` consumes ~2.2 GB, keeping peak usage at ~34.2 GB — safely below the 38.4 GB boundary with ~4.2 GB of VRAM headroom to spare.
+
+### Step 2: Model Ingestion & Custom Modelfiles
+
+The required base checkpoints must already be present in Ollama (pulled in section 3 above):
+
+* `deepseek-r1:14b-qwen-distill-q8_0` (~15.5 GB)
+* `qwen3-coder:30b-a3b-q8_0` (~32.0 GB)
+
+We wrap both in optimized Modelfile definitions to enforce their token parameters, context windows, and sampling temperatures.
+
+**1. Modelfile for Planner (`Modelfile.planner`)**
+
+Save as `Modelfile.planner`:
+
+FROM deepseek-r1:14b-qwen-distill-q8_0
+
+# Allocate 32k context for comprehensive repository tracing
+PARAMETER num_ctx 32768
+
+# Native reasoning temperature (DeepSeek works best around 0.6 for path exploration)
+PARAMETER temperature 0.6
+PARAMETER top_p 0.95
+
+# Explicit Planner System Prompt
+SYSTEM """You are the Lead Systems Architect and Strategic Planner.
+Your role is to diagnose root causes, prove algorithm complexity, and design strict, actionable implementation plans.
+Do not write complete boilerplate code or run shell builds yourself. Delegate all coding, file edits, and test execution to @coder.
+Always provide your diagnostic breakdown first, followed by an ordered list of tasks for the workhorse to execute."""
+
+**2. Modelfile for Coder (`Modelfile.coder`)**
+
+Save as `Modelfile.coder`:
+
+FROM qwen3-coder:30b-a3b-q8_0
+
+# Hard-limit context to 16k to protect the 38.4 GB VRAM ceiling with 32 GB weights
+PARAMETER num_ctx 16384
+
+# Low temperature for deterministic, hallucination-free code and tool syntax
+PARAMETER temperature 0.1
+PARAMETER top_p 0.95
+
+# Explicit Coder System Prompt
+SYSTEM """You are an autonomous tactical coding workhorse.
+Your role is to write clean, production-grade code, generate exact search-and-replace patches, and validate changes by running the project's test suite.
+Do not generate verbose conversational filler or high-level philosophical plans. Read the target file, apply the requested change precisely, and report the result."""
+
+**3. Build the Ollama Aliases**
+
+Run these commands in the terminal where your Modelfiles are saved:
+
+ollama create local-planner -f Modelfile.planner
+ollama create local-coder -f Modelfile.coder
+
+### Step 3: OpenCode Agent Configuration (`opencode.jsonc`)
+
+Place this file either at `~/.config/opencode/opencode.jsonc` (global) or directly in your project root as `opencode.jsonc`:
+
+{
+  "$schema": "https://opencode.ai/config.json",
+  // Primary default agent
+  "default_agent": "planner",
+  "agent": {
+    // ---------------------------------------------
+    // AGENT 1: STRATEGIC REASONER (Read-Only Architect)
+    // ---------------------------------------------
+    "planner": {
+      "mode": "primary",
+      "model": "ollama/local-planner",
+      "description": "High-level reasoning agent for root-cause analysis, architecture review, and long-range planning.",
+      "tools": {
+        "write": false,
+        "edit": false,
+        "bash": false
+      },
+      "permission": {
+        // Enforce strict read-only behavior; planner cannot mutate disk
+        "edit": "deny",
+        "bash": "deny"
+      }
+    },
+
+    // ---------------------------------------------
+    // AGENT 2: TACTICAL WORKHORSE (Write & Execute)
+    // ---------------------------------------------
+    "coder": {
+      "mode": "subagent",
+      "model": "ollama/local-coder",
+      "description": "Tactical code generation workhorse for diffs, file editing, and test execution.",
+      "tools": {
+        "write": true,
+        "edit": true,
+        "bash": true
+      },
+      "permission": {
+        // Allow autonomous file editing and shell execution
+        "edit": "allow",
+        "bash": "allow"
+      }
+    }
+  }
+}
+
+### Prompt Design Guidelines & Guardrails
+
+To run this setup efficiently, apply distinct prompt structures for each model.
+
+**Guardrail 1: The Context Boundary (16k for Coder)**
+
+Because `local-coder` is set to `num_ctx 16384` to prevent VRAM spikes, never feed whole raw directories or multi-megabyte log dumps into `@coder`.
+
+* Let `@planner` read the repo layout and isolate the exact 1–2 files that matter.
+* Let `@coder` only inspect the specific function or module requiring modification.
+
+**Guardrail 2: Enforcing Structured Handoffs**
+
+When `@planner` delegates to `@coder`, require `@planner` to emit a **Deterministic Patch Contract**. It must specify:
+
+1. Target File Path
+2. Exact Search Block
+3. Exact Replacement Block
+4. Validation Command (e.g., `pytest tests/test_parser.py -k test_empty_string`)
+
+### Prompt Templates & Directive Catalog
+
+**Template A: Dual-Model Divide & Conquer (Invoking Both)**
+
+Use this structure when tackling a bug, failing test, or multi-step feature implementation:
+
+@planner: We have a failing unit test in tests/test_engine.py::test_rebalance_overflow.
+1. Analyze the stack trace and inspect the relevant modules in src/allocation/.
+2. Formulate the mathematical and algorithmic root cause.
+3. Construct a step-by-step specification.
+4. Delegate the implementation, file patch, and test validation to @coder.
+
+Execution Flow:
+
+1. OpenCode engages `local-planner` (DeepSeek-R1). It reflects inside its `<think>` tokens, evaluates the algorithm, and forms the plan.
+2. `local-planner` finishes and invokes `@coder`.
+3. Ollama evicts `local-planner` and loads `local-coder` into VRAM (~1.8s).
+4. `local-coder` reads the target file, applies the patch, executes `pytest`, and confirms the test passes.
+
+**Template B: Dedicated `@planner` Prompts (Analysis / Code Review)**
+
+Use for single-pass analysis where no code should be modified:
+
+@planner: Review the git diff against main (git diff main...HEAD).
+Focus on:
+1. Algorithmic regressions or unnecessary O(N^2) loops.
+2. Race conditions, deadlocks, or thread safety issues.
+3. Unhandled error states on external I/O boundaries.
+Do NOT attempt to edit files. Provide your diagnostic report with line-specific suggestions.
+
+@planner: Analyze the graph traversal algorithm in src/routing/pathfinder.py.
+Evaluate the worst-case space and time complexity. Suggest how we can refactor this using an indexed priority queue and memoized A* heuristics.
+
+**Template C: Dedicated `@coder` Prompts (Direct Tactical Implementation)**
+
+Use when you already know what needs to be written and want fast, 35+ tok/s generation:
+
+@coder: In src/middleware/auth.py, implement the TokenBucketRateLimiter class according to the interface defined in docs/rate_limiting.md.
+Use atomic locks for thread safety.
+Once implemented, run `pytest tests/test_auth.py` and verify all tests pass.
+
+@coder: Refactor the function `parse_market_records` in src/parsers/trade.py to use streaming iteration instead of loading the full file into memory.
+
+### Verification and Health Check Run
+
+To test the entire pipeline end-to-end:
+
+1. Open a monitoring window in Terminal:
+
+watch -n 0.5 ollama ps
+
+2. Launch OpenCode in your target project:
+
+opencode
+
+3. Execute a smoke test prompt:
+
+@planner analyze the codebase structure. Then instruct @coder to create a file named health_check.txt containing the current timestamp.
+
+4. Observe the swap:
+   * Terminal 2 will show `local-planner` active at ~19.7 GB.
+   * As soon as planning concludes, `local-planner` drops out, and `local-coder` comes up at ~34.2 GB.
+   * Activity Monitor will show zero disk swap and memory pressure staying steadily in the green.
+
+## 9. Lightweight Variant: Single Executor Alias
+
+A lighter alternative to section 8 wraps only the coder role in a Modelfile-backed alias, leaving the planner pointed directly at its raw registry tag, and reuses the array-based `agents` / `permissions` schema from section 4's `opencode.jsonc`.
+
+### 1. Configure Memory and Swapping Variables
+
+Ensure your `~/.zshrc` has the proper eviction and allocation limits:
+
+# 80% Unified Memory Cap on 48 GB (39,321 MB)
+sudo sysctl iogpu.wired_limit_mb=39321
+
+# Enforce sequential loading (never run both simultaneously)
+export OLLAMA_MAX_LOADED_MODELS=1
+export OLLAMA_NUM_PARALLEL=1
+
+# Maintain resident model for 3 minutes during rapid tool loops
+export OLLAMA_KEEP_ALIVE=3m
+
+# Halve KV cache overhead
+export OLLAMA_KV_CACHE_TYPE=q8_0
+
+### 2. Create the Tailored Modelfile for the Workhorse
+
+To lock in the 16k context and low-temperature sampling for tool execution, create `Modelfile.executor`:
+
+FROM qwen3-coder:30b-a3b-q8_0
+
+# Keep context at 16k to protect the 80% VRAM ceiling with Q8 weights
+PARAMETER num_ctx 16384
+
+# Precise deterministic tool call syntax
+PARAMETER temperature 0.1
+PARAMETER top_p 0.95
+
+Register the alias:
+
+ollama create harness-executor -f Modelfile.executor
+
+### 3. Update `opencode.json`
+
+Point OpenCode to the exact tags:
+
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "ollama/deepseek-r1:14b-qwen-distill-q8_0",
+  "default_agent": "architect",
+  "agents": {
+    "architect": {
+      "mode": "primary",
+      "model": "ollama/deepseek-r1:14b-qwen-distill-q8_0",
+      "system": "You are the Lead Systems Architect. Analyze bug reports and tracebacks, diagnose root causes, and produce a step-by-step implementation plan. Never edit files directly — delegate all implementation to @coder.",
+      "permissions": [
+        { "action": "edit", "resource": "*", "effect": "deny" }
+      ]
+    },
+    "coder": {
+      "mode": "subagent",
+      "model": "ollama/harness-executor",
+      "system": "You are an autonomous tactical coding workhorse. Execute the assigned plan exactly: patch the specified files, run the validation command, and confirm the tests pass.",
+      "permissions": [
+        { "action": "edit", "resource": "*", "effect": "allow" },
+        { "action": "shell", "resource": "*", "effect": "allow" }
+      ]
+    }
+  }
+}
+
+### Verification Test
+
+To confirm that the models hot-swap sequentially without exceeding 80% VRAM, run the same smoke test described in section 8's "Verification and Health Check Run."
 EOF
 ```
 
