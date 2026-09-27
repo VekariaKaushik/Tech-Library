@@ -24,10 +24,6 @@
   - [Key Architectural Takeaway](#key-architectural-takeaway)
 - [8. Alternative Workflow: Custom Model Aliases via Ollama Modelfiles](#8-alternative-workflow-custom-model-aliases-via-ollama-modelfiles)
   - [Step 1: System-Level Configuration & Environment Setup](#step-1-system-level-configuration-environment-setup)
-<<<<<<< HEAD
-  - [Verified Dual-Model Registry Tags](#verified-dual-model-registry-tags)
-=======
->>>>>>> kv-wip
   - [Memory & VRAM Enforcement (M4 Pro 48 GB @ 80% Cap)](#memory-vram-enforcement-m4-pro-48-gb-80-cap)
   - [Step 2: Model Ingestion & Custom Modelfiles](#step-2-model-ingestion-custom-modelfiles)
   - [Step 3: OpenCode Agent Configuration (`opencode.jsonc`)](#step-3-opencode-agent-configuration-opencodejsonc)
@@ -203,9 +199,11 @@ ollama list
 
 ## 4. OpenCode Configuration (`opencode.jsonc`)
 
-Place this file in your project root or at `~/.config/opencode/opencode.jsonc`. It configures the dual-agent architecture, establishes strict read/write boundaries, configures 32k/16k context limits, and enables the real-time terminal telemetry HUD.
+Place this file in your project root or at `~/.config/opencode/opencode.jsonc`. It configures the dual-agent architecture and establishes strict read/write boundaries.
 
-This is the **canonical `opencode.jsonc`** for this guide. The `ui`, `telemetry`, `plugin`, and `provider` blocks below are shared verbatim by every alias-based variant later in this guide (§8, §9) — those sections only show the `agents` block that changes, on top of this same file, to avoid repeating ~30 lines of identical boilerplate three times. All four agents use the consistent schema this guide standardizes on: `agents` (plural) → per-agent `permissions` (an array of `{action, resource, effect}` rules), and `tools` with an explicit `read` key.
+> **⚠️ OpenCode V1 vs. V2 config schema.** An earlier version of this note used the **V2** permission schema — a `permissions` array of `{ "action", "resource", "effect" }` objects, alongside a separate `tools` block. Running that against a real **OpenCode V1** install fails, because V1 expects the **singular** `permission` key: a flat map from action name directly to `"allow"` / `"deny"` / `"ask"` (no `resource`/`effect` fields, and no separate `tools` block — `permission.read` covers read access on its own). The config below is the corrected, runtime-verified V1 form; every config in this guide (§4, §8, §9) has been updated to match. If you're on OpenCode V2, revert to the array form.
+
+This is the **canonical `opencode.jsonc`** for this guide. Every alias-based variant later on (§8, §9) reuses the same `provider` block shape and only swaps the `agents` block, to avoid repeating this boilerplate three times.
 
 ```jsonc
 {
@@ -215,18 +213,7 @@ This is the **canonical `opencode.jsonc`** for this guide. The `ui`, `telemetry`
   "plugin": [
     "superpowers@git+https://github.com/obra/superpowers.git"
   ],
-  "ui": {
-    "status_bar": true,
-    "show_token_usage": true,
-    "show_throughput": true,
-    "show_active_agent": true,
-    "show_tool_latencies": true
-  },
-  "telemetry": {
-    "track_usage": true,
-    "turn_summary": true,
-    "context_warning_threshold": 0.85
-  },
+
   "provider": {
     "ollama": {
       "npm": "@ai-sdk/openai-compatible",
@@ -252,90 +239,85 @@ This is the **canonical `opencode.jsonc`** for this guide. The `ui`, `telemetry`
       }
     }
   },
+
   "agents": {
+    // -------------------------------------------------------------------------
+    // 1. STRATEGIC REASONER & ARCHITECT (Read-Only)
+    // -------------------------------------------------------------------------
     "planner": {
       "mode": "primary",
       "model": "ollama/deepseek-r1:14b-qwen-distill-q8_0",
-      "description": "Lead architect for root-cause diagnosis, algorithm proofs, and planning.",
+      "description": "Lead architect for root-cause diagnosis and step-by-step planning.",
       "temperature": 0.6,
       "top_p": 0.95,
-      "tools": {
-        "read": true,
-        "write": false,
-        "edit": false,
-        "bash": false
+      // OpenCode V1 uses singular "permission" map
+      "permission": {
+        "read": "allow",
+        "edit": "deny",
+        "write": "deny",
+        "bash": "deny"
       },
-      "permissions": [
-        { "action": "read", "resource": "*", "effect": "allow" },
-        { "action": "edit", "resource": "*", "effect": "deny" },
-        { "action": "write", "resource": "*", "effect": "deny" },
-        { "action": "shell", "resource": "*", "effect": "deny" }
-      ],
       "system": "You are the Lead Systems Architect. Analyze bug traces, explore system dependencies, prove algorithmic invariants, and produce structured, step-by-step implementation plans. Never output raw file edits or attempt to run commands. Delegate tactical implementation to @coder."
     },
+
+    // -------------------------------------------------------------------------
+    // 2. CODE & SECURITY AUDITOR (Read-Only)
+    // -------------------------------------------------------------------------
     "reviewer": {
       "mode": "subagent",
       "model": "ollama/deepseek-r1:14b-qwen-distill-q8_0",
-      "description": "Auditor for diff reviews, race conditions, memory leaks, and complexity analysis.",
+      "description": "Auditor for diff reviews, race conditions, and complexity analysis.",
       "temperature": 0.4,
       "top_p": 0.90,
-      "tools": {
-        "read": true,
-        "write": false,
-        "edit": false,
-        "bash": false
+      "permission": {
+        "read": "allow",
+        "edit": "deny",
+        "write": "deny",
+        "bash": "deny"
       },
-      "permissions": [
-        { "action": "read", "resource": "*", "effect": "allow" },
-        { "action": "edit", "resource": "*", "effect": "deny" },
-        { "action": "write", "resource": "*", "effect": "deny" },
-        { "action": "shell", "resource": "*", "effect": "deny" }
-      ],
-      "system": "You are a Principal Code Reviewer. Audit diffs for edge-case vulnerabilities, asymptotic complexity regressions, memory retention, and concurrency races. Deliver actionable critique with mathematical rigor without mutating files."
+      "system": "You are a Principal Code Reviewer. Audit diffs for edge-case vulnerabilities, asymptotic complexity regressions, memory retention, and concurrency races. Deliver actionable critique without mutating files."
     },
+
+    // -------------------------------------------------------------------------
+    // 3. TACTICAL WORKHORSE (Write & Execute)
+    // -------------------------------------------------------------------------
     "coder": {
       "mode": "subagent",
       "model": "ollama/qwen3-coder:30b-a3b-q8_0",
       "description": "Autonomous tactical workhorse for AST patching, file editing, and test runs.",
       "temperature": 0.1,
       "top_p": 0.95,
-      "tools": {
-        "read": true,
-        "write": true,
-        "edit": true,
-        "bash": true
+      "permission": {
+        "read": "allow",
+        "edit": "allow",
+        "write": "allow",
+        "bash": "allow"
       },
-      "permissions": [
-        { "action": "read", "resource": "*", "effect": "allow" },
-        { "action": "edit", "resource": "*", "effect": "allow" },
-        { "action": "write", "resource": "*", "effect": "allow" },
-        { "action": "shell", "resource": "*", "effect": "allow" }
-      ],
       "system": "You are an autonomous tactical coding workhorse. Execute assigned engineering steps. Generate exact unified diffs or search-and-replace patches without conversational filler. Verify code syntax and run test suites using the shell tool."
     },
+
+    // -------------------------------------------------------------------------
+    // 4. TEST AUTOMATION SPECIALIST (Write & Execute)
+    // -------------------------------------------------------------------------
     "tester": {
       "mode": "subagent",
       "model": "ollama/qwen3-coder:30b-a3b-q8_0",
       "description": "Specialist for generating test fixtures, mocks, and executing test suites.",
       "temperature": 0.2,
       "top_p": 0.95,
-      "tools": {
-        "read": true,
-        "write": true,
-        "edit": true,
-        "bash": true
+      "permission": {
+        "read": "allow",
+        "edit": "allow",
+        "write": "allow",
+        "bash": "allow"
       },
-      "permissions": [
-        { "action": "read", "resource": "*", "effect": "allow" },
-        { "action": "edit", "resource": "*", "effect": "allow" },
-        { "action": "write", "resource": "*", "effect": "allow" },
-        { "action": "shell", "resource": "*", "effect": "allow" }
-      ],
       "system": "You are a Test Automation Specialist. Write targeted unit, regression, and property-based tests. Run test commands via the shell, interpret assertion traces, and fix failing tests until the suite passes completely."
     }
   }
 }
 ```
+
+The `ui`/`telemetry` blocks from an earlier draft of this config (status bar, token-usage display, telemetry tracking) aren't included above since they weren't part of the runtime-verified V1 fix — add them back only if you've confirmed your OpenCode version accepts them.
 
 ## 5. Live Multi-Pane Monitoring HUD
 
@@ -548,7 +530,7 @@ ollama create local-coder -f Modelfile.coder
 
 ### Step 3: OpenCode Agent Configuration (`opencode.jsonc`)
 
-Reuse the canonical `opencode.jsonc` from §4 as-is — same `ui`, `telemetry`, `plugin`, and `provider` blocks. Only two things change on top of that file:
+Reuse the canonical `opencode.jsonc` from §4 as-is — same `plugin` and `provider` blocks. Only two things change on top of that file:
 
 1. Drop the `reviewer` and `tester` agents (this workflow only needs `planner`/`coder`), and repoint their `model` fields to the two aliases created above.
 2. Add `local-planner` / `local-coder` entries to `provider.ollama.models` (mirroring the raw-tag entries already in §4) so OpenCode's context/output accounting still applies to the aliases.
@@ -571,13 +553,12 @@ Reuse the canonical `opencode.jsonc` from §4 as-is — same `ui`, `telemetry`, 
       "description": "High-level reasoning agent for root-cause analysis, architecture review, and long-range planning.",
       "temperature": 0.6,
       "top_p": 0.95,
-      "tools": { "read": true, "write": false, "edit": false, "bash": false },
-      "permissions": [
-        { "action": "read", "resource": "*", "effect": "allow" },
-        { "action": "edit", "resource": "*", "effect": "deny" },
-        { "action": "write", "resource": "*", "effect": "deny" },
-        { "action": "shell", "resource": "*", "effect": "deny" }
-      ]
+      "permission": {
+        "read": "allow",
+        "edit": "deny",
+        "write": "deny",
+        "bash": "deny"
+      }
     },
     "coder": {
       "mode": "subagent",
@@ -585,13 +566,12 @@ Reuse the canonical `opencode.jsonc` from §4 as-is — same `ui`, `telemetry`, 
       "description": "Tactical code generation workhorse for diffs, file editing, and test execution.",
       "temperature": 0.1,
       "top_p": 0.95,
-      "tools": { "read": true, "write": true, "edit": true, "bash": true },
-      "permissions": [
-        { "action": "read", "resource": "*", "effect": "allow" },
-        { "action": "edit", "resource": "*", "effect": "allow" },
-        { "action": "write", "resource": "*", "effect": "allow" },
-        { "action": "shell", "resource": "*", "effect": "allow" }
-      ]
+      "permission": {
+        "read": "allow",
+        "edit": "allow",
+        "write": "allow",
+        "bash": "allow"
+      }
     }
   }
 }
@@ -736,18 +716,23 @@ Same pattern as §8: reuse §4's canonical file, add `harness-planner` / `harnes
       "mode": "primary",
       "model": "ollama/harness-planner",
       "system": "You are the Lead Systems Architect. Analyze bug reports and tracebacks, diagnose root causes, and produce a step-by-step implementation plan. Never edit files directly — delegate all implementation to @coder.",
-      "permissions": [
-        { "action": "edit", "resource": "*", "effect": "deny" }
-      ]
+      "permission": {
+        "read": "allow",
+        "edit": "deny",
+        "write": "deny",
+        "bash": "deny"
+      }
     },
     "coder": {
       "mode": "subagent",
       "model": "ollama/harness-executor",
       "system": "You are an autonomous tactical coding workhorse. Execute the assigned plan exactly: patch the specified files, run the validation command, and confirm the tests pass.",
-      "permissions": [
-        { "action": "edit", "resource": "*", "effect": "allow" },
-        { "action": "shell", "resource": "*", "effect": "allow" }
-      ]
+      "permission": {
+        "read": "allow",
+        "edit": "allow",
+        "write": "allow",
+        "bash": "allow"
+      }
     }
   }
 }
