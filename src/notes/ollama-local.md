@@ -6,6 +6,82 @@
 
 ---
 
+## Table of Contents
+
+- [1. System Architecture & Memory Engineering](#1-system-architecture-memory-engineering)
+  - [Verified Model Registry Manifests](#verified-model-registry-manifests)
+  - [SWE-bench & Throughput Profile](#swe-bench-throughput-profile)
+- [2. Host Operating System Tuning](#2-host-operating-system-tuning)
+  - [A. Persist 80% VRAM Allocation](#a-persist-80-vram-allocation)
+  - [B. Configure Ollama Daemon (`~/.zshrc`)](#b-configure-ollama-daemon-zshrc)
+- [3. Ollama Model Setup & Registry Verification](#3-ollama-model-setup-registry-verification)
+- [4. OpenCode Configuration (`opencode.jsonc`)](#4-opencode-configuration-opencodejsonc)
+- [5. Live Multi-Pane Monitoring HUD](#5-live-multi-pane-monitoring-hud)
+- [6. Prompt Engineering & Operational Guardrails](#6-prompt-engineering-operational-guardrails)
+  - [Core Operational Rules](#core-operational-rules)
+  - [Production Prompt Catalog](#production-prompt-catalog)
+- [7. Performance Benchmarks: Local M4 Pro vs. Hyperscaler APIs](#7-performance-benchmarks-local-m4-pro-vs-hyperscaler-apis)
+  - [Key Architectural Takeaway](#key-architectural-takeaway)
+- [8. Alternative Workflow: Custom Model Aliases via Ollama Modelfiles](#8-alternative-workflow-custom-model-aliases-via-ollama-modelfiles)
+  - [Step 1: System-Level Configuration & Environment Setup](#step-1-system-level-configuration-environment-setup)
+  - [Verified Dual-Model Registry Tags](#verified-dual-model-registry-tags)
+  - [Memory & VRAM Enforcement (M4 Pro 48 GB @ 80% Cap)](#memory-vram-enforcement-m4-pro-48-gb-80-cap)
+  - [Step 2: Model Ingestion & Custom Modelfiles](#step-2-model-ingestion-custom-modelfiles)
+  - [Step 3: OpenCode Agent Configuration (`opencode.jsonc`)](#step-3-opencode-agent-configuration-opencodejsonc)
+  - [Prompt Design Guidelines & Guardrails](#prompt-design-guidelines-guardrails)
+  - [Prompt Templates & Directive Catalog](#prompt-templates-directive-catalog)
+  - [Verification and Health Check Run](#verification-and-health-check-run)
+- [9. Lightweight Variant: Single-Alias Naming Used by the Harness Scripts](#9-lightweight-variant-single-alias-naming-used-by-the-harness-scripts)
+  - [1. Configure Memory and Swapping Variables](#1-configure-memory-and-swapping-variables)
+  - [2. Create the Tailored Modelfiles](#2-create-the-tailored-modelfiles)
+  - [3. Update `opencode.json`](#3-update-opencodejson)
+  - [Verification Test](#verification-test)
+- [10. Why These Models: Selection Rationale & Benchmarks](#10-why-these-models-selection-rationale-benchmarks)
+  - [Architectural Differences: Qwen 2.5 vs. Qwen 3](#architectural-differences-qwen-25-vs-qwen-3)
+  - [SWE-bench Verified Performance](#swe-bench-verified-performance)
+  - [Tokens Per Second (on Apple Silicon M4 Pro, 273 GB/s Bandwidth)](#tokens-per-second-on-apple-silicon-m4-pro-273-gbs-bandwidth)
+  - [Summary: How It Affects Your Agent Loop](#summary-how-it-affects-your-agent-loop)
+  - [Comparative SWE-bench Standings](#comparative-swe-bench-standings)
+  - [Score Comparison by Quantization Level](#score-comparison-by-quantization-level)
+  - [SWE-bench Comparison: 32B Coder vs. Other Options](#swe-bench-comparison-32b-coder-vs-other-options)
+  - [Fit Confirmation Checklist (M4 Pro 48 GB)](#fit-confirmation-checklist-m4-pro-48-gb)
+- [11. Operational Routing Matrix: Task → Model Mapping](#11-operational-routing-matrix-task-model-mapping)
+  - [Category 1: Code Review (Static Analysis & Security)](#category-1-code-review-static-analysis-security)
+  - [Category 2: Writing Code (Feature Implementation & Refactoring)](#category-2-writing-code-feature-implementation-refactoring)
+  - [Category 3: Writing Tests (TDD & Edge-Case Coverage)](#category-3-writing-tests-tdd-edge-case-coverage)
+  - [Category 4: Analyzing Code & Complex Algorithms](#category-4-analyzing-code-complex-algorithms)
+  - [Category 5: Running Autonomous Harnesses (Closed-Loop Debugging)](#category-5-running-autonomous-harnesses-closed-loop-debugging)
+  - [Unified CLI Router Pattern](#unified-cli-router-pattern)
+- [12. Deep Dive: The Divide-and-Conquer Protocol Architecture](#12-deep-dive-the-divide-and-conquer-protocol-architecture)
+  - [What the Execution Loop Looks Like in Practice](#what-the-execution-loop-looks-like-in-practice)
+  - [Full Architecture Diagram](#full-architecture-diagram)
+  - [Memory & VRAM Breakdown Under the 80% Cap (32k-Context Executor Variant)](#memory-vram-breakdown-under-the-80-cap-32k-context-executor-variant)
+  - [Layer-by-Layer Architecture](#layer-by-layer-architecture)
+  - [How the Divide-and-Conquer Protocol Operates](#how-the-divide-and-conquer-protocol-operates)
+  - [Failure Modes & Architectural Mitigations](#failure-modes-architectural-mitigations)
+  - [Why This Setup Fits the M4 Pro (48 GB)](#why-this-setup-fits-the-m4-pro-48-gb)
+- [13. Updated Runtime Configuration & Verification Monitoring](#13-updated-runtime-configuration-verification-monitoring)
+  - [1. Configure Ollama Environment Variables](#1-configure-ollama-environment-variables)
+  - [Updated Memory Strategy: Strict 80% Allocation Ceiling](#updated-memory-strategy-strict-80-allocation-ceiling)
+  - [Step 5: Verification & Performance Monitoring](#step-5-verification-performance-monitoring)
+- [14. Reference Implementation A: `harness.py` (Search/Replace Patch Variant)](#14-reference-implementation-a-harnesspy-searchreplace-patch-variant)
+- [15. Reference Implementation B: `harness.py` (Full-File Write Variant)](#15-reference-implementation-b-harnesspy-full-file-write-variant)
+  - [Review Notes](#review-notes)
+- [16. Extended Model Comparison Research](#16-extended-model-comparison-research)
+  - [Comparative Reasoning Breakdown](#comparative-reasoning-breakdown)
+  - [The SWE-bench vs. Speed Trade-Off Landscape](#the-swe-bench-vs-speed-trade-off-landscape)
+  - [Broader Reasoning / Coding / Tooling Survey](#broader-reasoning-coding-tooling-survey)
+  - [What "SWE-bench Verified" Actually Measures](#what-swe-bench-verified-actually-measures)
+  - [Ollama vs. MLX on M4 Pro: Which Backend to Pick for Harnesses?](#ollama-vs-mlx-on-m4-pro-which-backend-to-pick-for-harnesses)
+  - [Single-Model vs. Two-Model Trade-off (If You Don't Want to Run Two Models)](#single-model-vs-two-model-trade-off-if-you-dont-want-to-run-two-models)
+  - [The Verdict: No Single Model Hits "High" on Every Dimension](#the-verdict-no-single-model-hits-high-on-every-dimension)
+- [17. Local Dual-Model Setup vs. Cloud Frontier Defaults (Claude Sonnet 5 / Grok)](#17-local-dual-model-setup-vs-cloud-frontier-defaults-claude-sonnet-5-grok)
+  - [Detailed Compare & Contrast](#detailed-compare-contrast)
+  - [Reading the Trade-off](#reading-the-trade-off)
+  - [Closing the Gap: What Hardware and Models It Would Actually Take](#closing-the-gap-what-hardware-and-models-it-would-actually-take)
+
+---
+
 ## 1. System Architecture & Memory Engineering
 
 To run an autonomous software engineering pipeline locally without exceeding memory constraints, the architecture isolates cognitive workloads between two specialized models using **sequential hot-swapping** (`OLLAMA_MAX_LOADED_MODELS=1`). This guarantees that only one model resides in memory at any given second.
@@ -1998,4 +2074,13 @@ Evaluating specialized variants designed explicitly to combine thinking with age
 
 ### Closing the Gap: What Hardware and Models It Would Actually Take
 
-The gap to Sonnet 5 isn't primarily a software or prompting problem — it's that §1's whole architecture is built around a hard 48 GB / 273 GB/s ceiling, and every design choice in this guide (16k coder context, `q8_0` over `fp16`, sequential hot-swapping instead of both models resident, the pruning guardrails in §11) exists to fit two comparatively small models (14B and 30B-total/3.3B-active) inside that envelope. Sonnet 5 is almost certainly served as a much larger model (frontier labs don't publish exact parameter counts, but the pattern across the industry is triple-digit-billion to trillion-parameter-class Mixture-of-Experts) across a cluster of datacenter accelerators with aggregate memory bandwidth in the multiple-TB/s range — one to two orders of magnitude past a single M4 Pro's 273 GB/s — plus agentic tool-use and coding RLHF at a scale no single locally-hosted checkpoint replicates. Meaningfully closing that gap therefore requires moving on both axes at once, not just one. On hardware, the realistic Apple Silicon step-up is a Mac Studio with an Ultra-class chip: the M2 Ultra (192 GB unified memory, ~800 GB/s) or M3 Ultra (up to 512 GB, ~819 GB/s) — roughly **3x the memory bandwidth** of this guide's M4 Pro and, more importantly, enough unified memory headroom to hold a genuinely large model's weights and KV cache without the 80%-cap juggling in §2/§8; the alternative path is a multi-GPU NVIDIA workstation (e.g., 2–4× H100/H200 with NVLink) which trades Apple's unified-memory simplicity for far higher raw bandwidth and cost. On the model side, that hardware tier is what makes it feasible to `ollama pull` something in the 70B–671B-parameter class instead of this guide's 14B/30B pair — candidates like `deepseek-r1:671b` (DeepSeek-R1 full MoE, 37B active, needs ~400+ GB even at Q4_K_M, so effectively requires the 512 GB M3 Ultra), `qwen3:235b-a22b` (235B-total/22B-active MoE, fits a 192–512 GB Ultra at Q4–Q8), `llama3.1:405b` (dense, ~230 GB at Q4, punishing on tokens/sec since it has no MoE sparsity to exploit), or `gpt-oss:120b` (117B-total MoE, the most attainable of the group at ~120 GB and a realistic fit for a 192 GB M2 Ultra) — all of which post SWE-bench Verified and general reasoning numbers meaningfully closer to frontier-tier than the `deepseek-r1:14b` / `qwen3-coder:30b-a3b` pair this guide runs. Even fully specced, though, expect diminishing returns rather than parity: you'd be spending roughly $8K–$15K+ on a Mac Studio Ultra (or comparably more on a multi-GPU rig) and drawing hundreds of watts to run a single dense/MoE model with no hot-swap partner, still bottlenecked to double-digit tok/s on the largest dense checkpoints, and still without the agentic tool-use fine-tuning and inference-time optimizations (speculative decoding, custom kernels, RLHF at Anthropic's scale) that make Sonnet 5 behave the way it does — so this buys you a stronger single local model, not a local Sonnet 5.
+* **Why the gap exists:** §1's whole architecture is built around a hard 48 GB / 273 GB/s ceiling, and every design choice in this guide (16k coder context, `q8_0` over `fp16`, sequential hot-swapping instead of both models resident, the pruning guardrails in §11) exists to fit two comparatively small models (14B and 30B-total/3.3B-active) inside that envelope. Sonnet 5 is almost certainly served as a much larger model (frontier labs don't publish exact parameter counts, but the industry pattern is triple-digit-billion to trillion-parameter-class Mixture-of-Experts) across a cluster of datacenter accelerators with aggregate memory bandwidth in the multiple-TB/s range — one to two orders of magnitude past a single M4 Pro's 273 GB/s — plus agentic tool-use and coding RLHF at a scale no single locally-hosted checkpoint replicates. Meaningfully closing that gap requires moving on both axes at once, not just one.
+* **Hardware step-up (Apple Silicon):** a Mac Studio with an Ultra-class chip — the M2 Ultra (192 GB unified memory, ~800 GB/s) or M3 Ultra (up to 512 GB, ~819 GB/s) — roughly **3x the memory bandwidth** of this guide's M4 Pro, and more importantly, enough unified memory headroom to hold a genuinely large model's weights and KV cache without the 80%-cap juggling in §2/§8.
+* **Hardware step-up (alternative path):** a multi-GPU NVIDIA workstation (e.g., 2–4× H100/H200 with NVLink), trading Apple's unified-memory simplicity for far higher raw bandwidth and cost.
+* **Models that hardware tier unlocks** (`ollama pull` targets in the 70B–671B class instead of this guide's 14B/30B pair):
+  * `deepseek-r1:671b` — DeepSeek-R1 full MoE, 37B active, needs ~400+ GB even at `Q4_K_M`, effectively requiring the 512 GB M3 Ultra.
+  * `qwen3:235b-a22b` — 235B-total/22B-active MoE, fits a 192–512 GB Ultra at Q4–Q8.
+  * `llama3.1:405b` — dense, ~230 GB at Q4, punishing on tokens/sec since it has no MoE sparsity to exploit.
+  * `gpt-oss:120b` — 117B-total MoE, the most attainable of the group at ~120 GB and a realistic fit for a 192 GB M2 Ultra.
+  * All four post SWE-bench Verified and general reasoning numbers meaningfully closer to frontier-tier than the `deepseek-r1:14b` / `qwen3-coder:30b-a3b` pair this guide runs.
+* **The honest ceiling:** even fully specced, expect diminishing returns rather than parity. You'd be spending roughly $8K–$15K+ on a Mac Studio Ultra (or comparably more on a multi-GPU rig) and drawing hundreds of watts to run a single dense/MoE model with no hot-swap partner, still bottlenecked to double-digit tok/s on the largest dense checkpoints, and still without the agentic tool-use fine-tuning and inference-time optimizations (speculative decoding, custom kernels, RLHF at Anthropic's scale) that make Sonnet 5 behave the way it does — so this buys you a stronger single local model, not a local Sonnet 5.
